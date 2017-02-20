@@ -96,10 +96,7 @@ func prepareStreamingRequest(req *http.Request, dataLen int64, timestamp time.Ti
 	req.Header.Set("X-Amz-Content-Sha256", streamingSignAlgorithm)
 	req.Header.Set("Content-Encoding", streamingEncoding)
 	req.Header.Set("X-Amz-Date", timestamp.Format(iso8601DateFormat))
-
-	streamContentLen := getStreamLength(dataLen, int64(payloadChunkSize))
 	// Set content length with streaming signature for each chunk included.
-	req.Header.Set("Content-Length", strconv.FormatInt(streamContentLen, 10))
 	req.Header.Set("x-amz-decoded-content-length", strconv.FormatInt(dataLen, 10))
 }
 
@@ -111,7 +108,6 @@ func getChunkHeader(chunkLen int64, signature string) []byte {
 
 // getChunkSignature - returns chunk signature for a given chunk and previous signature.
 func getChunkSignature(chunkData []byte, reqTime time.Time, region, previousSignature, secretAccessKey string) string {
-
 	chunkStringToSign := getChunkStringToSign(reqTime, region, previousSignature, chunkData)
 	signingKey := getSigningKey(secretAccessKey, region, reqTime)
 	return getSignature(signingKey, chunkStringToSign)
@@ -151,7 +147,7 @@ type StreamingReader struct {
 // signChunk - signs a chunk read from s.baseReader of chunkLen size.
 func (s *StreamingReader) signChunk(chunkLen int) error {
 	// Compute chunk signature for next header.
-	signature := getChunkSignature(s.chunkBuf, s.reqTime, s.region,
+	signature := getChunkSignature(s.chunkBuf[:chunkLen], s.reqTime, s.region,
 		s.prevSignature, s.secretAccessKey)
 
 	// For next chunk signature computation.
@@ -164,10 +160,8 @@ func (s *StreamingReader) signChunk(chunkLen int) error {
 		return err
 	}
 
-	if chunkLen > 0 {
-		// Write chunk data into streaming buffer.
-		s.buf.Write(s.chunkBuf)
-	}
+	// Write chunk data into streaming buffer.
+	s.buf.Write(s.chunkBuf[:chunkLen])
 	s.buf.Write([]byte("\r\n"))
 	return nil
 }
@@ -189,7 +183,9 @@ func (s *StreamingReader) setStreamingAuthHeader(req *http.Request) {
 
 // StreamingSignV4 - provides chunked upload signatureV4 support by
 // implementing io.Reader.
-func StreamingSignV4(req *http.Request, accessKeyID, secretAccessKey, region string, dataLen int64, reqTime time.Time) {
+func StreamingSignV4(req *http.Request, accessKeyID, secretAccessKey, region string, dataLen int64) {
+	reqTime := time.Now().UTC()
+
 	stReader := &StreamingReader{
 		baseReadCloser:  req.Body,
 		accessKeyID:     accessKeyID,
@@ -198,6 +194,10 @@ func StreamingSignV4(req *http.Request, accessKeyID, secretAccessKey, region str
 		reqTime:         reqTime,
 		chunkBuf:        make([]byte, payloadChunkSize),
 	}
+
+	streamContentLen := getStreamLength(dataLen, int64(payloadChunkSize))
+	req.ContentLength = streamContentLen
+
 	// Add the request headers required for chunk upload signing.
 	prepareStreamingRequest(req, dataLen, reqTime)
 	stReader.contentLen = dataLen
